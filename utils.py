@@ -12,6 +12,10 @@ import datasets
 import torch
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 from transformers import PreTrainedTokenizerBase
+
+
+from typing import Union, TypeVar
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def configure_logging(
@@ -70,11 +74,12 @@ def cleanup_memory() -> None:
             f" ({(memory_after - memory_before) / (1024 ** 3):.2f} GB)"
         )
 
-
 T = TypeVar('T')
 
 
-def map_tensors(obj: T, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> T:
+
+
+def map_tensors(obj: T, device, dtype) -> T:
     """Recursively map tensors to device and dtype."""
     if isinstance(obj, torch.Tensor):
         if device is not None:
@@ -92,7 +97,7 @@ def map_tensors(obj: T, device: torch.device | str | None = None, dtype: torch.d
 
 @torch.no_grad()
 def evaluate_ppl(
-    model: torch.nn.Module, pad_token_id: int | None, testloader: DataLoader[dict[str, torch.Tensor]], silence=True
+    model: torch.nn.Module, pad_token_id, testloader, silence=True
 ) -> float:
     """
     Evaluate the model's perplexity on the test set using batch processing.
@@ -116,7 +121,8 @@ def evaluate_ppl(
     for batch in testloader:
         if not silence:
             logging.debug(f"Evaluating batch {len(nlls)}")
-        batch = map_tensors(batch, device)
+        # batch = map_tensors(batch, device)
+        batch = map_tensors(batch, device, None)
         logits = model(**batch).logits
 
         # shift outputs and labels autoregressively.
@@ -164,7 +170,12 @@ def get_dataset(name: str) -> datasets.DatasetDict:
     logging.info(f"Loading dataset: {name}")
 
     ds_properties = {
-        "wikitext2": {"path": "/data/lgzhong/tiny/train/svd/data/wikitext", "config_name": "wikitext-2-raw-v1"},
+        # "wikitext2": {"path": "/data/lgzhong/tiny/train/svd/data/wikitext", "config_name": "wikitext-2-raw-v1"},
+        "wikitext2": {"path": '../data/llm/wikitext-2-raw-v1-train',
+                      "config_name": "wikitext-2-raw-v1" ,
+                      'data_files': { 'train': 'train-00000-of-00001-6506f33274247c0c.parquet'  },
+                      },
+
         "ptb": {"path": "ptb_text_only", "config_name": "penn_treebank"},
         "c4": {
             "path": "allenai/c4",
@@ -176,6 +187,9 @@ def get_dataset(name: str) -> datasets.DatasetDict:
             "cols_to_remove": ['url', 'timestamp'],
         },
         "alpaca": {"path": "tatsu-lab/alpaca", "cols_to_remove": ['input', 'output', 'instruction']},
+
+        "alpaca-gpt4": {"path": "vicgalle/alpaca-gpt4", "cols_to_remove": ['input', 'output', 'instruction']}
+
     }
 
     if name not in ds_properties:
@@ -203,7 +217,7 @@ def get_dataset(name: str) -> datasets.DatasetDict:
 
 def prepare_test_dataloader(
     dataset: datasets.Dataset, tokenizer: PreTrainedTokenizerBase, seqlen: int = 2048, batch_size: int = 1
-) -> DataLoader[dict[str, torch.Tensor]]:
+):
     """
     Get a DataLoader from a test dataset. This dataloader should be used when comparing WikiText2 perplexities with other papers, e.g. SparseGPT (arxiv.org/abs/2301.00774).
 
@@ -253,7 +267,7 @@ def prepare_dataloader(
     nsamples: int = 128,
     varied_seqlen: bool = False,
     seed=42,
-) -> DataLoader[dict[str, torch.Tensor]]:
+):
     """
     Get a DataLoader from a dataset.
 

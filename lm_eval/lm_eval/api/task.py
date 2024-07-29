@@ -710,6 +710,7 @@ class ConfigurableTask(Task):
         self.dataset = datasets.load_dataset(
             path=self.DATASET_PATH,
             name=self.DATASET_NAME,
+            verification_mode = "no_checks",
             **dataset_kwargs if dataset_kwargs is not None else {},
         )
 

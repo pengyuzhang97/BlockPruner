@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
+        default="cuda",
         help="Device to use for computation (e.g., 'cpu', 'cuda').",
     )
     parser.add_argument(
@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        default=None,
+        default='../llm_model/llama2-7b',
         help="Path to load the model and tokenizer",
     )
     parser.add_argument(
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         "--del-block-num",
         type=int,
         help="Number of blocks to delete.",
-        default=0,
+        default=20,
     )
     parser.add_argument(
         "--block-type",
@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         "--cal-dataset",
         type=str,
         help="Dataset for calibration.",
-        choices=["wikitext2", "alpaca"],
+        choices=["wikitext2", "alpaca", 'alpaca-gpt4'],
         default="alpaca",
     )
     parser.add_argument(
@@ -248,7 +248,7 @@ def main() -> None:
         batch_size=args.ppl_eval_batch_size
     )
 
-    block_search_by_ppl(args, model, test_loader, model_size)
+    block_search_by_ppl(args, model, test_loader=test_loader, model_size=model_size)
 
 
 if __name__ == "__main__":

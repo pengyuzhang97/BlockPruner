@@ -1,3 +1,4 @@
+import os.path
 from typing import Optional, Tuple
 import argparse
 import json
@@ -5,13 +6,31 @@ import logging
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers import set_seed; set_seed(42)
+from transformers import set_seed;
+
+# from lm_eval import lm_eval
+
+set_seed(42)
 import utils
-import lm_eval
+
+
+# import sys
+# sys.path.append(os.path.join(os.path.dirname(__file__), "lm_eval"))
+# # sys.path.remove('/home/yons/pyz/lm-evaluation-harness')
+# print(sys.path)
+
+# import lm_eval
+
+
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), "lm_eval"))
+
 from lm_eval import utils as lm_eval_utils
 from lm_eval.api.registry import ALL_TASKS
 from lm_eval.models.huggingface import HFLM
 from lm_eval.tasks import initialize_tasks
+from lm_eval.evaluator import simple_evaluate
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
+        default="cuda",
         help="Device to use for computation (e.g., 'cpu', 'cuda').",
     )
     parser.add_argument(
@@ -43,19 +62,20 @@ def parse_args() -> argparse.Namespace:
         "--ppl-search-file",
         type=str,
         help="...",
+        default=  'ppls/llama2-7b_mix_alpaca_ns_32_del_order_list.json'
     )
     parser.add_argument(
         "--del-block-num",
         type=int,
         help="Number of blocks to delete.",
-        default=0,
+        default=12,
     )
     parser.add_argument(
         "--cal-dataset",
         type=str,
         help="Dataset for calibration.",
         choices=["wikitext2", "alpaca"],
-        default="wikitext2",
+        default="alpaca",
     )
     parser.add_argument(
         "--ppl-eval-seqlen", type=int, default=2048, help="Sequence length for evaluating the perplexity."
@@ -170,13 +190,18 @@ def remove_redundant_blocks(args, model):
 
 
 def eval(args, model, tokenizer):
+
     hflm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size)
+
+    # hflm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=args.batch_size)
     
     task_names = lm_eval_utils.pattern_match(args.tasks, ALL_TASKS)
 
     logging.info(f"Selected Tasks: {task_names}")
 
-    results = lm_eval.simple_evaluate(hflm, tasks=task_names, num_fewshot=args.num_fewshot, batch_size=args.batch_size)['results']
+    # results = lm_eval.evaluator.simple_evaluate(hflm, tasks=task_names, num_fewshot=args.num_fewshot, batch_size=args.batch_size)['results']
+    results = simple_evaluate(hflm, tasks=task_names, num_fewshot=args.num_fewshot, batch_size=args.batch_size)['results']
+
 
     metric_vals = {task: round(result.get('acc_norm,none', result['acc,none']), 4) for task, result in results.items()}
     logging.info(json.dumps(metric_vals, indent=4))
@@ -214,19 +239,24 @@ def main() -> None:
 
     dataset = utils.get_dataset(args.cal_dataset)
     test_dataset = dataset["test"]
+
     test_loader = utils.prepare_test_dataloader(
-        dataset=test_dataset, 
-        tokenizer=tokenizer, 
+        dataset=test_dataset,
+        tokenizer=tokenizer,
         seqlen=args.ppl_eval_seqlen,
         batch_size=args.ppl_eval_batch_size
     )
+
+    print('Data is Done')
 
     remove_redundant_blocks(args, model)
     logging.info(f"pruned model size: {get_model_params(model)/1e9:.3f}B")
     logging.info(f"pruning ratio: {(1- get_model_params(model)/model_size) * 100:.2f}")
 
-    dataset_ppl = utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
-    logging.info(f'model ppl: {dataset_ppl:.4f}')
+    # dataset_ppl = utils.evaluate_ppl(model, model.config.pad_token_id, test_loader)
+
+
+    # logging.info(f'model ppl: {dataset_ppl:.4f}')
 
     if args.do_eval:
         eval(args, model, tokenizer)
