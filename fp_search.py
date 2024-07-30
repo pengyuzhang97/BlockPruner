@@ -14,9 +14,9 @@ import random
 
 from utils import zo_step_for_acc_grad
 
-
-
 from peft import prepare_model_for_kbit_training
+
+import copy
 
 
 def parse_args() -> argparse.Namespace:
@@ -204,7 +204,7 @@ def block_search_by_ppl(args, model, test_loader=None, model_size=None):
     logging.info(f"del_order_list path: {file_name}")
 
 
-def fp_search_by_is( model, test_loader=None, model_size=None, load_in_8bit=False, load_in_4bit=True):
+def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bit=False, load_in_4bit=True):
     if load_in_8bit or load_in_4bit:  # this line will set parameters to False
         #         1- Cast the layernorm in fp32 2- making output embedding layer require grads 3- Add the upcasting of the lm
         #         head to fp32
@@ -324,7 +324,9 @@ def fp_search_by_is( model, test_loader=None, model_size=None, load_in_8bit=Fals
 
     import json
 
-    file_name = f"{script_args.single_output_dir}/{script_args.model_name_or_path.split('/')[-1]}_mix_{script_args.dataset_name}_ns_{len(dataset_downsample)}_del_order_list.json"
+    file_name =  f"{args.ppl_search_path}/{args.model_path.split('/')[-1]}_{args.block_type}_{args.cal_dataset}_ns_{args.cal_nsamples}_del_order_list.json"
+
+    # file_name = f"{args.ppl-search-path}/{script_args.model_name_or_path.split('/')[-1]}_mix_{script_args.dataset_name}_ns_{len(dataset_downsample)}_del_order_list.json"
     with open(file_name, "w") as f:
         json.dump(final_dict, f)
     # logging.info(f"del_order_list path: {file_name}")
@@ -371,6 +373,7 @@ def main() -> None:
 
     model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype=compute_dtype, trust_remote_code=True,
                                                  device_map="auto", use_cache=False)
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
     model_size = get_model_params(model)
@@ -386,7 +389,7 @@ def main() -> None:
         batch_size=args.ppl_eval_batch_size
     )
 
-    fp_search_by_is(model, test_loader=test_loader, load_in_8bit=False, load_in_4bit=True)
+    fp_search_by_is(args, model, test_loader=test_loader, load_in_8bit=False, load_in_4bit=True)
 
     # block_search_by_ppl(args, model, test_loader, model_size)
 
