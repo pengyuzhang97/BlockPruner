@@ -240,12 +240,12 @@ def main() -> None:
     dataset = utils.get_dataset(args.cal_dataset)
     test_dataset = dataset["test"]
 
-    test_loader = utils.prepare_test_dataloader(
-        dataset=test_dataset,
-        tokenizer=tokenizer,
-        seqlen=args.ppl_eval_seqlen,
-        batch_size=args.ppl_eval_batch_size
-    )
+    # test_loader = utils.prepare_test_dataloader(
+    #     dataset=test_dataset,
+    #     tokenizer=tokenizer,
+    #     seqlen=args.ppl_eval_seqlen,
+    #     batch_size=args.ppl_eval_batch_size
+    # )
 
     print('Data is Done')
 

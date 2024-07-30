@@ -230,7 +230,9 @@ def fp_search_by_is( model, test_loader=None, model_size=None, load_in_8bit=Fals
     for step, inputs in (enumerate(tqdm(test_loader))):
 
         # Note that loss is averaged on the batch size
-        loss, named_grads_to_store = zo_step_for_acc_grad(model, inputs, global_step, module_name_list, named_grads_to_store, len(train_dataloader))
+        loss, named_grads_to_store = zo_step_for_acc_grad(model, inputs, global_step, module_name_list, named_grads_to_store, len(test_loader))
+
+
         # loss = model_instance.training_step(model, inputs)  # backward is conducted in this line
 
         global_step += 1

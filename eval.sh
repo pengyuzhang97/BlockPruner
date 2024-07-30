@@ -4,9 +4,9 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 ori_model_in_ppls=Llama-2-7b
 local_model_name=llama2-7b
-block_num=12
+block_num=17
 dataset=alpaca
-ppl_search_file=ppls/${ori_model_in_ppls}_mix_alpaca_ns_32_del_order_list.json
+ppl_search_file=ppls/${local_model_name}_mix_alpaca_ns_256_del_order_list.json
 
 
 python eval.py \
