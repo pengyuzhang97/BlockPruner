@@ -18,6 +18,8 @@ from peft import prepare_model_for_kbit_training
 
 import copy
 
+from transformers import HfArgumentParser, TrainingArguments, BitsAndBytesConfig
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -76,6 +78,38 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ppl-eval-batch-size", type=int, default=8, help="Batch size for evaluating the perplexity.")
     return parser.parse_args()
+
+
+def get_model_config(load_in_8bit = False, load_in_4bit = True):
+    if load_in_8bit and load_in_4bit:
+        raise ValueError("You can't load the model in 8 bits and 4 bits at the same time")
+    elif load_in_8bit:
+        quantization_config = BitsAndBytesConfig(
+            load_in_8bit=load_in_8bit
+        )
+        # Copy the model to each device
+        # device_map = {"": Accelerator().local_process_index}
+        device_map = 'auto'
+        # device_map = 'sequential'
+        torch_dtype = torch.bfloat16
+    elif load_in_4bit:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=load_in_4bit,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+        # Copy the model to each device
+        # device_map = {"": Accelerator().local_process_index}
+        device_map = 'auto'
+        # device_map = 'sequential'
+        torch_dtype = torch.bfloat16
+    else:
+        device_map = None
+        quantization_config = None
+        torch_dtype = torch.bfloat16
+    return device_map, quantization_config, torch_dtype
+
 
 
 class MaskedLlamaDecoderLayer(nn.Module):
@@ -371,7 +405,11 @@ def main() -> None:
     else:
         raise NotImplementedError("Unsupported compute type.")
 
-    model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype=compute_dtype, trust_remote_code=True,
+    device_map, quantization_config, torch_dtype = get_model_config()
+
+    model = AutoModelForCausalLM.from_pretrained(args.model_path,
+                                                 quantization_config=quantization_config,
+                                                 torch_dtype=compute_dtype, trust_remote_code=True,
                                                  device_map="auto", use_cache=False)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
