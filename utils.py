@@ -13,6 +13,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 from transformers import PreTrainedTokenizerBase
 
+import numpy as np
+import bitsandbytes.functional as bnbF
+
 
 from typing import Union, TypeVar
 
@@ -75,7 +78,6 @@ def cleanup_memory() -> None:
         )
 
 T = TypeVar('T')
-
 
 
 
@@ -149,6 +151,118 @@ def evaluate_ppl(
         )
 
     return ppl.item()
+
+# model.config.pad_token_id
+
+def zo_forward(model, batch):
+
+
+    if model.config.pad_token_id:
+        loss_fn = torch.nn.CrossEntropyLoss(reduction="none", ignore_index=model.config.pad_token_id)
+    else:
+        loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+
+
+    batch = map_tensors(batch, device, None)
+    logits = model(**batch).logits
+
+    # shift outputs and labels autoregressively.
+    logits = logits[:, :-1, :]
+    shift_labels = batch["input_ids"][:, 1:]
+
+    # CrossEntropyLoss demands data dimension is dimension 1.
+    nll = loss_fn(logits.permute(0, 2, 1), shift_labels).float()
+
+    mask = shift_labels != loss_fn.ignore_index
+    loss = (nll * mask).sum(dim=1) / mask.sum(dim=1)
+
+    return loss.detach()
+
+
+def zo_perturb_parameters_4_quant(zo_random_seed, zo_eps, named_parameters_to_optim, scaling_factor=1):
+    """
+    designed for quantized model, support 4bit quantize
+    """
+    torch.manual_seed(zo_random_seed)
+    for _, param in named_parameters_to_optim.items():
+        ori_weight_bf16 = bnbF.dequantize_nf4(param.data, param.quant_state)
+        z = torch.normal(mean=0, std=1, size=ori_weight_bf16.size(), device=ori_weight_bf16.device, dtype=ori_weight_bf16.dtype)
+        # perturbed_weight_bf16 = ori_weight_bf16 + scaling_factor * z * self.zo_eps
+        param.data = bnbF.quantize_nf4(ori_weight_bf16 + scaling_factor * z * zo_eps)[0]
+        # param.data = param.data + scaling_factor * z * self.zo_eps
+        del ori_weight_bf16
+
+# @torch.no_grad()
+def zo_step_for_acc_grad(model, inputs, step, module_name_list, named_grads_to_store, len, zo_eps = 1e-3) :
+    """
+    Estimate gradient by MeZO. Return the loss from f(theta + z)
+    """
+    # args = self.args
+    # module_name_list = ['v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj']
+
+    # What parameters to optimize
+    if step == 0:
+        named_parameters_to_optim = {}
+        for name, param in model.named_parameters():
+            # if any(ta_name in name for ta_name in module_name_list):
+            if 'self_attn' in name or 'mlp' in name:
+                named_parameters_to_optim[name] = param
+                # # TODO avoid init the memory for grad.
+                # param.grad = torch.zeros_like(param.data)
+                # param.grad = None  # Make sure the grad is empty and will not be updated.
+
+    # Sample the random seed for sampling z
+    zo_random_seed = np.random.randint(1000000000)
+
+    # First function evaluation
+    zo_perturb_parameters_4_quant(zo_random_seed, zo_eps, named_parameters_to_optim, scaling_factor=1)
+    loss1 = zo_forward(model, inputs)
+
+    # Second function evaluation
+    # two side perturbation
+    zo_perturb_parameters_4_quant(zo_random_seed, zo_eps, named_parameters_to_optim, scaling_factor=-2)
+    loss2 = zo_forward(model, inputs)
+    projected_grad = ((loss1 - loss2) / (2 * zo_eps)).item()
+
+    # Reset model back to its parameters at start of step
+    zo_perturb_parameters_4_quant(zo_random_seed, zo_eps, named_parameters_to_optim, scaling_factor=1)
+
+    # Set the random seed to ensure that we sample the same z for perturbation/update
+    torch.manual_seed(zo_random_seed)
+
+    i = 0
+    for n, param in named_grads_to_store.items():
+        # Resample z
+
+        # ori_weight_bf16 = bnbF.dequantize_nf4(param.data, param.quant_state)
+        ori_weight_bf16 = bnbF.dequantize_nf4(named_parameters_to_optim[n].data,
+                                              named_parameters_to_optim[n].quant_state)
+        z = torch.normal(mean=0, std=1, size=ori_weight_bf16.size(), device=ori_weight_bf16.device,
+                         dtype=ori_weight_bf16.dtype)
+        del ori_weight_bf16
+        graddiff_times_z = projected_grad * z
+        named_grads_to_store[n].data += graddiff_times_z.data / len
+
+        # named_grads_to_store[i][1].data += graddiff_times_z.data
+        i += 1
+
+        # param.grad = None
+
+    # # No gradient accumulation support
+    # assert self.args.gradient_accumulation_steps == 1
+
+    return loss1, named_grads_to_store
+
+
+    # """
+    # Evaluate the model's perplexity on the test set using batch processing.
+    # It is expected that model is already on the correct device.
+    # """
+    # sync_gpus()
+    #
+    # start_time = time.time()
+    #
+    # model.eval()
 
 
 def sync_gpus() -> None:

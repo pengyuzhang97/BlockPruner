@@ -12,6 +12,12 @@ set_seed(42)
 import utils
 import random
 
+from utils import zo_step_for_acc_grad
+
+
+
+from peft import prepare_model_for_kbit_training
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -198,12 +204,12 @@ def block_search_by_ppl(args, model, test_loader=None, model_size=None):
     logging.info(f"del_order_list path: {file_name}")
 
 
-def fp_search_by_is(args, model, test_loader=None, model_size=None):
-    if script_args.load_in_8bit or script_args.load_in_4bit:  # this line will set parameters to False
+def fp_search_by_is( model, test_loader=None, model_size=None, load_in_8bit=False, load_in_4bit=True):
+    if load_in_8bit or load_in_4bit:  # this line will set parameters to False
         #         1- Cast the layernorm in fp32 2- making output embedding layer require grads 3- Add the upcasting of the lm
         #         head to fp32
         model = prepare_model_for_kbit_training(
-            model, use_gradient_checkpointing=training_args.gradient_checkpointing
+            model, use_gradient_checkpointing=False
         )
 
     import bitsandbytes.functional as bnbF
@@ -285,7 +291,9 @@ def main() -> None:
         batch_size=args.ppl_eval_batch_size
     )
 
-    block_search_by_ppl(args, model, test_loader, model_size)
+    fp_search_by_is(model, test_loader=test_loader, load_in_8bit=False, load_in_4bit=True)
+
+    # block_search_by_ppl(args, model, test_loader, model_size)
 
 
 if __name__ == "__main__":
