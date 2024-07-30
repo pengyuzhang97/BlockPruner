@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
         "--cal-nsamples",
         type=int,
         help="Number of samples for calibration.",
-        default=128,
+        default=256,
     )
     parser.add_argument(
         "--ppl-eval-seqlen", type=int, default=2048, help="Sequence length for evaluating the perplexity."

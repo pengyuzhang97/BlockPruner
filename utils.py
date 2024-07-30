@@ -176,7 +176,9 @@ def zo_forward(model, batch):
     mask = shift_labels != loss_fn.ignore_index
     loss = (nll * mask).sum(dim=1) / mask.sum(dim=1)
 
-    return loss.detach()
+    loss_mean = torch.mean(loss)
+
+    return loss_mean.detach()
 
 
 def zo_perturb_parameters_4_quant(zo_random_seed, zo_eps, named_parameters_to_optim, scaling_factor=1):
@@ -193,23 +195,23 @@ def zo_perturb_parameters_4_quant(zo_random_seed, zo_eps, named_parameters_to_op
         del ori_weight_bf16
 
 # @torch.no_grad()
-def zo_step_for_acc_grad(model, inputs, step, module_name_list, named_grads_to_store, len, zo_eps = 1e-3) :
+def zo_step_for_acc_grad(model, inputs, step, module_name_list, named_parameters_to_optim, named_grads_to_store, len, zo_eps = 1e-3) :
     """
     Estimate gradient by MeZO. Return the loss from f(theta + z)
     """
     # args = self.args
     # module_name_list = ['v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj']
 
-    # What parameters to optimize
-    if step == 0:
-        named_parameters_to_optim = {}
-        for name, param in model.named_parameters():
-            # if any(ta_name in name for ta_name in module_name_list):
-            if 'self_attn' in name or 'mlp' in name:
-                named_parameters_to_optim[name] = param
-                # # TODO avoid init the memory for grad.
-                # param.grad = torch.zeros_like(param.data)
-                # param.grad = None  # Make sure the grad is empty and will not be updated.
+    # # What parameters to optimize
+    # if step == 0:
+    #     named_parameters_to_optim = {}
+    #     for name, param in model.named_parameters():
+    #         # if any(ta_name in name for ta_name in module_name_list):
+    #         if 'self_attn' in name or 'mlp' in name:
+    #             named_parameters_to_optim[name] = param
+    #             # # TODO avoid init the memory for grad.
+    #             # param.grad = torch.zeros_like(param.data)
+    #             # param.grad = None  # Make sure the grad is empty and will not be updated.
 
     # Sample the random seed for sampling z
     zo_random_seed = np.random.randint(1000000000)

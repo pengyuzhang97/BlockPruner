@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
+        default="cuda",
         help="Device to use for computation (e.g., 'cpu', 'cuda').",
     )
     parser.add_argument(
@@ -38,14 +38,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        default=None,
+        default='../llm_model/llama2-7b',
         help="Path to load the model and tokenizer",
     )
     parser.add_argument(
         "--ppl-search-path",
         type=str,
         help="Path to save the perplexity search results.",
-        default="ppls",
+        default="fp_ppls",
     )
     parser.add_argument(
         "--del-block-num",
@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--cal-nsamples",
         type=int,
         help="Number of samples for calibration.",
-        default=128,
+        default=256,
     )
     parser.add_argument(
         "--ppl-eval-seqlen", type=int, default=2048, help="Sequence length for evaluating the perplexity."
@@ -251,6 +251,7 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
     global_step = 0
     module_name_list = ['v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj']
     named_grads_to_store = {}
+    named_parameters_to_optim = {}
 
     for name, param in model.named_parameters():
         if any(ta_name in name for ta_name in module_name_list):
@@ -261,10 +262,17 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
             named_grads_to_store[name] = torch.empty(ori_weight_bf16.size(), dtype=ori_weight_bf16.dtype, device=ori_weight_bf16.device)
             del ori_weight_bf16
 
+        if 'self_attn' in name or 'mlp' in name:
+            named_parameters_to_optim[name] = param
+
+
+
+
+
     for step, inputs in (enumerate(tqdm(test_loader))):
 
         # Note that loss is averaged on the batch size
-        loss, named_grads_to_store = zo_step_for_acc_grad(model, inputs, global_step, module_name_list, named_grads_to_store, len(test_loader))
+        loss, named_grads_to_store = zo_step_for_acc_grad(model, inputs, global_step, module_name_list, named_parameters_to_optim , named_grads_to_store, len(test_loader))
 
 
         # loss = model_instance.training_step(model, inputs)  # backward is conducted in this line
@@ -326,7 +334,7 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
         if 'v_proj' in item or 'o_proj' in item:
             modified_keys_list.append(item.replace('v_proj', 'mha').replace('o_proj', 'mha'))
         else:
-            modified_keys_list.append(item.replace('up_proj', 'ffn').replace('gate_proj', 'ffn').replace('down_proj', 'ffn'))
+            modified_keys_list.append(item.replace('up_proj', 'mlp').replace('gate_proj', 'mlp').replace('down_proj', 'mlp'))
 
     filtered_list = []
     seen = set()
@@ -357,15 +365,19 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
 
 
     import json
+    import os
 
     file_name =  f"{args.ppl_search_path}/{args.model_path.split('/')[-1]}_{args.block_type}_{args.cal_dataset}_ns_{args.cal_nsamples}_del_order_list.json"
 
-    # file_name = f"{args.ppl-search-path}/{script_args.model_name_or_path.split('/')[-1]}_mix_{script_args.dataset_name}_ns_{len(dataset_downsample)}_del_order_list.json"
+    directory = os.path.dirname(file_name)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
     with open(file_name, "w") as f:
         json.dump(final_dict, f)
     # logging.info(f"del_order_list path: {file_name}")
 
-    print(final_dict)
+    # print(final_dict)
 
 
 def apply_block_masks(model, seq):
@@ -420,12 +432,14 @@ def main() -> None:
     dataset = utils.get_dataset(args.cal_dataset)
     test_dataset = dataset["test"]
     sampled_test_dataset = test_dataset.select(random.sample(range(len(test_dataset)), args.cal_nsamples))
+    # print(len(sampled_test_dataset))
     test_loader = utils.prepare_test_dataloader(
         dataset=sampled_test_dataset,
         tokenizer=tokenizer,
         seqlen=args.ppl_eval_seqlen,
         batch_size=args.ppl_eval_batch_size
     )
+    # print(test_loader)
 
     fp_search_by_is(args, model, test_loader=test_loader, load_in_8bit=False, load_in_4bit=True)
 
