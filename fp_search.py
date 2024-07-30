@@ -238,6 +238,99 @@ def fp_search_by_is( model, test_loader=None, model_size=None, load_in_8bit=Fals
         global_step += 1
 
 
+    # compute score
+    target_dtype = torch.bfloat16
+    elem_score_dict_sum = {}
+    score_dict_mul = {}
+    mat_score_dict_sum = {}
+    elem_imp = False
+    matrix_imp = True
+
+    score_method = 'sum'
+    for name, param in model.named_parameters():
+        if any(ta_name in name for ta_name in module_name_list):
+            if elem_imp:
+                if score_method == 'sum':
+                    elem_score_dict_sum[name] = torch.sum( torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ))
+                    del named_grads_to_store[name]
+                    torch.cuda.empty_cache()
+                elif score_method == 'all':
+                    elem_score_dict_sum[name] = torch.sum( torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ))
+                    score_dict_mul[name] = torch.prod(  torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ) )
+                    del named_grads_to_store[name]
+                    torch.cuda.empty_cache()
+            elif matrix_imp:
+                mat_score_dict_sum[name] = torch.abs( torch.trace( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype).T @ named_grads_to_store[name].to(target_dtype)) )
+                del named_grads_to_store[name]
+                torch.cuda.empty_cache()
+
+
+            # ori_weight_bf16 = bnbF.dequantize_nf4(param.data, param.quant_state)
+
+    # keys filter
+
+    keys = list(mat_score_dict_sum.keys())
+    values = list(mat_score_dict_sum.values())
+
+    import re
+    pattern = re.compile(r'model\.layers\.(\d+)\..*\.(.*)\.weight')
+
+    def simplify_key(key):
+        match = pattern.match(key)
+        if match:
+            layer_index = match.group(1)
+            module_name = match.group(2)
+            return f'{layer_index}.{module_name}'
+        return key
+
+    simplified_keys = [simplify_key(key) for key in keys]
+    sorted_indices = sorted(range(len(values)), key=lambda i: values[i], reverse=False)
+    sorted_simplified_keys = [simplified_keys[i] for i in sorted_indices]
+
+    modified_keys_list = []
+    for item in sorted_simplified_keys:
+        if 'v_proj' in item or 'o_proj' in item:
+            modified_keys_list.append(item.replace('v_proj', 'mha').replace('o_proj', 'mha'))
+        else:
+            modified_keys_list.append(item.replace('up_proj', 'ffn').replace('gate_proj', 'ffn').replace('down_proj', 'ffn'))
+
+    filtered_list = []
+    seen = set()
+
+    lower_threshold = 5
+    upper_threshold = 29
+
+    for item in modified_keys_list:
+        layer_index = int(item.split('.')[0])
+        if lower_threshold <= layer_index <= upper_threshold and item not in seen:
+            filtered_list.append(item)
+            seen.add(item)
+
+
+    final_dict = {}
+    temp_list = []
+    num = 1
+    for item in filtered_list:
+        layer_index = int(item.split('.')[0])
+        layer_type = item.split('.')[1]
+        module = [layer_type, layer_index]
+        temp_list.append(module)
+        final_dict[str(num)] = copy.deepcopy(temp_list)
+        num += 1
+
+    for key in final_dict:
+        final_dict[key] = sorted(final_dict[key], key=lambda x: x[1], reverse=False)
+
+
+    import json
+
+    file_name = f"{script_args.single_output_dir}/{script_args.model_name_or_path.split('/')[-1]}_mix_{script_args.dataset_name}_ns_{len(dataset_downsample)}_del_order_list.json"
+    with open(file_name, "w") as f:
+        json.dump(final_dict, f)
+    # logging.info(f"del_order_list path: {file_name}")
+
+    print(final_dict)
+
 
 def apply_block_masks(model, seq):
     del_layer_dict = {}
