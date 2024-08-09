@@ -10,6 +10,8 @@ from transformers import set_seed; set_seed(42)
 import utils
 import random
 
+random.seed(2024)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()

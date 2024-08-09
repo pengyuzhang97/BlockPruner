@@ -273,7 +273,7 @@ def sync_gpus() -> None:
         torch.cuda.synchronize(device=i)
 
 
-def get_dataset(name: str) -> datasets.DatasetDict:
+def get_dataset(name: str, sft=False) -> datasets.DatasetDict:
     """
     Get the dataset from the HuggingFace datasets library.
 
@@ -304,7 +304,9 @@ def get_dataset(name: str) -> datasets.DatasetDict:
         },
         "alpaca": {"path": "tatsu-lab/alpaca", "cols_to_remove": ['input', 'output', 'instruction']},
 
-        "alpaca-gpt4": {"path": "vicgalle/alpaca-gpt4", "cols_to_remove": ['input', 'output', 'instruction']}
+        "alpaca-sft": {"path": "tatsu-lab/alpaca", "cols_to_remove": ['input',  'instruction']},
+
+        "alpaca-gpt4-sft": {"path": "vicgalle/alpaca-gpt4", "cols_to_remove": ['input', 'output', 'instruction']}
 
     }
 
@@ -320,7 +322,7 @@ def get_dataset(name: str) -> datasets.DatasetDict:
         ds = ds.remove_columns(properties["cols_to_remove"])
 
     # if alpaca, create a test and validation set from the training set
-    if name == "alpaca":
+    if name == "alpaca" or name == "alpaca-sft":
         ds = ds["train"].train_test_split(test_size=0.2, seed=42)
         temp_ds = ds.pop("test")
         temp_ds = temp_ds.train_test_split(test_size=0.5, seed=42)

@@ -238,7 +238,9 @@ def block_search_by_ppl(args, model, test_loader=None, model_size=None):
     logging.info(f"del_order_list path: {file_name}")
 
 
-def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bit=False, load_in_4bit=True):
+
+def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bit=False, load_in_4bit=True,
+                     elem_imp=True, matrix_imp=False, lower_threshold = 5, upper_threshold = 29):
     if load_in_8bit or load_in_4bit:  # this line will set parameters to False
         #         1- Cast the layernorm in fp32 2- making output embedding layer require grads 3- Add the upcasting of the lm
         #         head to fp32
@@ -266,9 +268,6 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
             named_parameters_to_optim[name] = param
 
 
-
-
-
     for step, inputs in (enumerate(tqdm(test_loader))):
 
         # Note that loss is averaged on the batch size
@@ -285,15 +284,14 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
     elem_score_dict_sum = {}
     score_dict_mul = {}
     mat_score_dict_sum = {}
-    elem_imp = False
-    matrix_imp = True
 
-    score_method = 'sum'
+
+    score_method = 'sum'  # TODO: try normalized group
     for name, param in model.named_parameters():
         if any(ta_name in name for ta_name in module_name_list):
             if elem_imp:
                 if score_method == 'sum':
-                    elem_score_dict_sum[name] = torch.sum( torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ))
+                    elem_score_dict_sum[name] = torch.prod( torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ))
                     del named_grads_to_store[name]
                     torch.cuda.empty_cache()
                 elif score_method == 'all':
@@ -310,9 +308,12 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
             # ori_weight_bf16 = bnbF.dequantize_nf4(param.data, param.quant_state)
 
     # keys filter
-
-    keys = list(mat_score_dict_sum.keys())
-    values = list(mat_score_dict_sum.values())
+    if elem_imp:
+        keys = list(elem_score_dict_sum.keys())
+        values = list(elem_score_dict_sum.values())
+    elif matrix_imp:
+        keys = list(mat_score_dict_sum.keys())
+        values = list(mat_score_dict_sum.values())
 
     import re
     pattern = re.compile(r'model\.layers\.(\d+)\..*\.(.*)\.weight')
@@ -339,8 +340,8 @@ def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bi
     filtered_list = []
     seen = set()
 
-    lower_threshold = 5
-    upper_threshold = 29
+    # lower_threshold = 5
+    # upper_threshold = 29
 
     for item in modified_keys_list:
         layer_index = int(item.split('.')[0])
@@ -441,7 +442,8 @@ def main() -> None:
     )
     # print(test_loader)
 
-    fp_search_by_is(args, model, test_loader=test_loader, load_in_8bit=False, load_in_4bit=True)
+    fp_search_by_is(args, model, test_loader=test_loader, model_size=None, load_in_8bit=False, load_in_4bit=True,
+                     elem_imp=True, matrix_imp=False, lower_threshold = 5, upper_threshold = 29)
 
     # block_search_by_ppl(args, model, test_loader, model_size)
 

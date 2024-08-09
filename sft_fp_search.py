@@ -8,8 +8,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import set_seed;
 
 set_seed(42)
+
 import utils
 import random
+
+random.seed(2024)
 
 from utils import zo_step_for_acc_grad
 
@@ -65,8 +68,8 @@ def parse_args() -> argparse.Namespace:
         "--cal-dataset",
         type=str,
         help="Dataset for calibration.",
-        choices=["wikitext2", "alpaca"],
-        default="alpaca",
+        choices=["wikitext2", "alpaca", 'alpaca-sft'],
+        default="alpaca-sft",
     )
     parser.add_argument(
         "--cal-nsamples",
@@ -129,7 +132,7 @@ class ScriptArguments:
     push_to_hub: Optional[bool] = field(default=False, metadata={"help": "Push the model to HF Hub"})
     hub_model_id: Optional[str] = field(default=None, metadata={"help": "The name of the model on HF Hub"})
     gradient_checkpointing: Optional[bool] = field(default=True, metadata={"help": "Enable gradient checkpointing"})
-    template: Optional[str] = field(default="alpaca", metadata={"help": "the template to use"})
+    template: Optional[str] = field(default="alpaca_no_instruct", metadata={"help": "the template to use. alpaca_no_instruct, alpaca"})
     seed: Optional[int] = field(default=2024, metadata={"help": "the seed to use"})
     dpo_beta: Optional[float] = field(default=0.0, metadata={"help": "the beta parameter of DPO"})
     dataset_sample: Optional[int] = field(default=20000, metadata={"help": "the number of samples to use from the dataset"})
@@ -275,7 +278,10 @@ def get_model_params(model):
 
 # ===== layer selection =====
 
-def compute_score(args, model, local_data, zo_eps, data_collator, tokenizer, formatting_prompts_func, lower_threshold = 5 , upper_threshold = 29):
+# lower_threshold = 0 , upper_threshold = 31,elem_imp = False, matrix_imp = True , not good -> 54 average
+
+def compute_score(args, model, local_data, zo_eps, data_collator, tokenizer, formatting_prompts_func,
+                  lower_threshold = 0 , upper_threshold = 31,elem_imp = False, matrix_imp = True):
     import bitsandbytes.functional as bnbF
     from fp_utils.modified_trainer import get_sft_trainer_fp
 
@@ -330,14 +336,12 @@ def compute_score(args, model, local_data, zo_eps, data_collator, tokenizer, for
     elem_score_dict_sum = {}
     score_dict_mul = {}
     mat_score_dict_sum = {}
-    elem_imp = False
-    matrix_imp = True
 
-    score_method = 'sum'
+    score_method = 'normalized_sum'
     for name, param in model.named_parameters():
         if any(ta_name in name for ta_name in module_name_list):
             if elem_imp:
-                if score_method == 'sum':
+                if score_method == 'normalized_sum':
                     elem_score_dict_sum[name] = torch.sum( torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ))
                     del named_grads_to_store[name]
                     torch.cuda.empty_cache()
@@ -412,7 +416,10 @@ def compute_score(args, model, local_data, zo_eps, data_collator, tokenizer, for
     import json
     import os
 
-    file_name =  f"{args.ppl_search_path}/{args.model_path.split('/')[-1]}_{args.block_type}_{args.cal_dataset}_ns_{args.cal_nsamples}_del_order_list.json"
+    # lower_threshold = 0, upper_threshold = 31, elem_imp = False, matrix_imp = True
+
+    file_name =  (f"{args.ppl_search_path}/{args.model_path.split('/')[-1]}_{args.block_type}_"
+                  f"{args.cal_dataset}_ns_{args.cal_nsamples}_lwth_{lower_threshold}_upth_{upper_threshold}_elem_{elem_imp}_mat_{matrix_imp}_del_order_list.json")
 
     directory = os.path.dirname(file_name)
     if not os.path.exists(directory):
@@ -425,182 +432,6 @@ def compute_score(args, model, local_data, zo_eps, data_collator, tokenizer, for
     print('done')
 
 
-
-    # # for minibatch and uncertainty computation
-    # for step, inputs in enumerate(train_dataloader):
-    #
-    #     loss = trainer.zo_step_for_grad(model, inputs,
-    #                                     ipt = {} ,exp_avg_ipt = {}, exp_avg_unc = {},
-    #                                     global_step = global_step, beta1=0.85, beta2=0.95)
-    #     # loss = model_instance.training_step(model, inputs)  # backward is conducted in this line
-    #
-    #     global_step += 1
-
-
-    # compute score
-    # # uncertainty
-    # is_dict = {}
-    # for n, p in model.named_parameters():
-    #     if beta2 > 0 and beta2 < 1:
-    #         is_dict[n] = exp_avg_ipt[n] * exp_avg_unc[n]
-    #     elif beta2 == 1.:
-    #         is_dict[n] = exp_avg_ipt[n]
-    #     elif beta2 == 2.:
-    #         is_dict[n] = exp_avg_ipt[n] * exp_avg_unc.sqrt()
-    #     else:
-    #         # Handling the uncepted beta2 to default setting
-    #         is_dict[n] = exp_avg_ipt[n] * (ipt[n] - exp_avg_ipt[n]).abs()
-
-
-    # structured sorting
-
-
-
-
-
-
-def fp_search_by_is( args, model, test_loader=None, model_size=None, load_in_8bit=False, load_in_4bit=True):
-
-
-    if load_in_8bit or load_in_4bit:  # this line will set parameters to False
-        #         1- Cast the layernorm in fp32 2- making output embedding layer require grads 3- Add the upcasting of the lm
-        #         head to fp32
-        model = prepare_model_for_kbit_training(
-            model, use_gradient_checkpointing=False
-        )
-
-    import bitsandbytes.functional as bnbF
-
-    global_step = 0
-    module_name_list = ['v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj']
-    named_grads_to_store = {}
-    named_parameters_to_optim = {}
-
-    for name, param in model.named_parameters():
-        if any(ta_name in name for ta_name in module_name_list):
-            ori_weight_bf16 = bnbF.dequantize_nf4(param.data, param.quant_state)
-            # weight_fp = torch.empty((4096, 11008), dtype=torch.bfloat16, device= m.weight.data.device)
-            # bnbF.dequantize_nf4(m.weight.data, m.weight.quant_stat, out= weight_fp)
-            # named_grads_to_store.append((name, torch.empty(shape, dtype=torch.bfloat16, device=m.weight.data.device)))
-            named_grads_to_store[name] = torch.empty(ori_weight_bf16.size(), dtype=ori_weight_bf16.dtype, device=ori_weight_bf16.device)
-            del ori_weight_bf16
-
-        if 'self_attn' in name or 'mlp' in name:
-            named_parameters_to_optim[name] = param
-
-
-
-
-
-    for step, inputs in (enumerate(tqdm(test_loader))):
-
-        # Note that loss is averaged on the batch size
-        loss, named_grads_to_store = zo_step_for_acc_grad(model, inputs, global_step, module_name_list, named_parameters_to_optim , named_grads_to_store, len(test_loader))
-
-
-        # loss = model_instance.training_step(model, inputs)  # backward is conducted in this line
-
-        global_step += 1
-
-
-    # compute score
-    target_dtype = torch.bfloat16
-    elem_score_dict_sum = {}
-    score_dict_mul = {}
-    mat_score_dict_sum = {}
-    elem_imp = False
-    matrix_imp = True
-
-    score_method = 'sum'
-    for name, param in model.named_parameters():
-        if any(ta_name in name for ta_name in module_name_list):
-            if elem_imp:
-                if score_method == 'sum':
-                    elem_score_dict_sum[name] = torch.sum( torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ))
-                    del named_grads_to_store[name]
-                    torch.cuda.empty_cache()
-                elif score_method == 'all':
-                    elem_score_dict_sum[name] = torch.sum( torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ))
-                    score_dict_mul[name] = torch.prod(  torch.abs( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype) * named_grads_to_store[name].to(target_dtype) ) )
-                    del named_grads_to_store[name]
-                    torch.cuda.empty_cache()
-            elif matrix_imp:
-                mat_score_dict_sum[name] = torch.abs( torch.trace( bnbF.dequantize_nf4(param.data, param.quant_state).to(target_dtype).T @ named_grads_to_store[name].to(target_dtype)) )
-                del named_grads_to_store[name]
-                torch.cuda.empty_cache()
-
-
-            # ori_weight_bf16 = bnbF.dequantize_nf4(param.data, param.quant_state)
-
-    # keys filter
-
-    keys = list(mat_score_dict_sum.keys())
-    values = list(mat_score_dict_sum.values())
-
-    import re
-    pattern = re.compile(r'model\.layers\.(\d+)\..*\.(.*)\.weight')
-
-    def simplify_key(key):
-        match = pattern.match(key)
-        if match:
-            layer_index = match.group(1)
-            module_name = match.group(2)
-            return f'{layer_index}.{module_name}'
-        return key
-
-    simplified_keys = [simplify_key(key) for key in keys]
-    sorted_indices = sorted(range(len(values)), key=lambda i: values[i], reverse=False)
-    sorted_simplified_keys = [simplified_keys[i] for i in sorted_indices]
-
-    modified_keys_list = []
-    for item in sorted_simplified_keys:
-        if 'v_proj' in item or 'o_proj' in item:
-            modified_keys_list.append(item.replace('v_proj', 'mha').replace('o_proj', 'mha'))
-        else:
-            modified_keys_list.append(item.replace('up_proj', 'mlp').replace('gate_proj', 'mlp').replace('down_proj', 'mlp'))
-
-    filtered_list = []
-    seen = set()
-
-    lower_threshold = 5
-    upper_threshold = 29
-
-    for item in modified_keys_list:
-        layer_index = int(item.split('.')[0])
-        if lower_threshold <= layer_index <= upper_threshold and item not in seen:
-            filtered_list.append(item)
-            seen.add(item)
-
-
-    final_dict = {}
-    temp_list = []
-    num = 1
-    for item in filtered_list:
-        layer_index = int(item.split('.')[0])
-        layer_type = item.split('.')[1]
-        module = [layer_type, layer_index]
-        temp_list.append(module)
-        final_dict[str(num)] = copy.deepcopy(temp_list)
-        num += 1
-
-    for key in final_dict:
-        final_dict[key] = sorted(final_dict[key], key=lambda x: x[1], reverse=False)
-
-
-    import json
-    import os
-
-    file_name =  f"{args.ppl_search_path}/{args.model_path.split('/')[-1]}_{args.block_type}_{args.cal_dataset}_ns_{args.cal_nsamples}_del_order_list.json"
-
-    directory = os.path.dirname(file_name)
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-
-    with open(file_name, "w") as f:
-        json.dump(final_dict, f)
-    # logging.info(f"del_order_list path: {file_name}")
-
-    # print(final_dict)
 
 
 def apply_block_masks(model, seq):
@@ -663,9 +494,9 @@ def main() -> None:
 
 
 
-    dataset = utils.get_dataset(args.cal_dataset)
-    test_dataset = dataset["test"]
-    sampled_test_dataset = test_dataset.select(random.sample(range(len(test_dataset)), args.cal_nsamples))
+    # dataset = utils.get_dataset(args.cal_dataset)
+    # test_dataset = dataset["test"]
+    # sampled_test_dataset = test_dataset.select(random.sample(range(len(test_dataset)), args.cal_nsamples))
 
     from fp_utils.utils_sft import get_formatting_prompts_func
     from trl import DataCollatorForCompletionOnlyLM
@@ -685,7 +516,8 @@ def main() -> None:
     sampled_test_dataset = test_dataset.select(random.sample(range(len(test_dataset)), args.cal_nsamples))
 
     zo_eps = 1e-3
-    compute_score(args, model, sampled_test_dataset, zo_eps, data_collator, tokenizer, formatting_prompts_func, lower_threshold = 5 , upper_threshold = 29)
+    compute_score(args, model, sampled_test_dataset, zo_eps, data_collator, tokenizer,
+                  formatting_prompts_func, lower_threshold = 5, upper_threshold = 25, elem_imp = False, matrix_imp = True)
 
     # # print(len(sampled_test_dataset))
     # test_loader = utils.prepare_test_dataloader(
